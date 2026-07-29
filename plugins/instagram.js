@@ -11,6 +11,37 @@ const UA_BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const UA_IPHONE  = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 const UA_ANDROID = 'Instagram 195.0.0.31.123 Android (26/8.0.0; 480dpi; 1080x1920; OnePlus; OnePlus5T; op8t19; en_IN; 302733750)';
 
+// ═══════════════════════════════════════════════════════════════════════════
+// STRATEGY 0: cobalt.tools (API-based, no auth needed — primary)
+// ═══════════════════════════════════════════════════════════════════════════
+async function tryCobalt(url) {
+    const r = await axios.post('https://api.cobalt.tools/', { url, downloadMode: 'auto' }, {
+        headers: {
+            'Accept':       'application/json',
+            'Content-Type': 'application/json',
+            'User-Agent':   UA_BROWSER,
+        },
+        timeout: 20000,
+    });
+    const d = r.data;
+    if (d?.status === 'redirect' || d?.status === 'stream') {
+        if (!d.url) throw new Error('cobalt: no url');
+        return [{ url: d.url, type: d.url.includes('.mp4') ? 'video' : 'image' }];
+    }
+    if (d?.status === 'picker' && Array.isArray(d.picker)) {
+        const items = d.picker.map(i => ({
+            url:  i.url,
+            type: (i.type === 'video' || (i.url || '').includes('.mp4')) ? 'video' : 'image',
+        })).filter(i => i.url);
+        if (!items.length) throw new Error('cobalt: picker empty');
+        return items;
+    }
+    if (d?.status === 'error' || d?.error?.code) {
+        throw new Error(`cobalt: ${d?.error?.code || d?.text || 'error'}`);
+    }
+    throw new Error('cobalt: unexpected response');
+}
+
 const SESSION_FILE = path.join(__dirname, '../data/ig_session.json');
 
 // ─── Session persistence ────────────────────────────────────────────────────
@@ -529,10 +560,9 @@ module.exports = [
             }
 
             const botName = getStr('botName') || 'Silva MD';
-            const hasSession = !!loadSession();
 
             const loading = await sock.sendMessage(jid, {
-                text: fmt(`⏳ _Fetching Instagram content…_\n${hasSession ? '🔑 Using authenticated session' : '🌐 No session — trying public strategies'}`),
+                text: fmt(`⏳ _Fetching Instagram content…_`),
                 contextInfo,
             }, { quoted: message }).catch(() => null);
 
@@ -540,18 +570,19 @@ module.exports = [
                 if (loading?.key) sock.sendMessage(jid, { delete: loading.key }).catch(() => {});
             };
 
-            // Strategy chain — session cookie first, then public fallbacks
+            // Strategy chain — API-first (no cookies required), session cookie last resort
             const STRATEGIES = [
-                { name: 'Session Cookie',  fn: () => trySessionCookie(url)  },
+                { name: 'cobalt.tools',    fn: () => tryCobalt(url)         },
                 { name: 'GraphQL',         fn: () => tryGraphQL(url)         },
                 { name: 'Mobile API',      fn: () => tryMobileApi(url)       },
                 { name: 'Embed Page',      fn: () => tryEmbedPage(url)       },
                 { name: 'Parallel APIs',   fn: () => tryParallelApis(url)    },
                 { name: 'SnipSave',        fn: () => trySnapsave(url)        },
-                // FastDL removed — fastdl.app dead 2026-06
                 { name: 'iGram',           fn: () => tryIgram(url)           },
                 { name: 'NPM Package',     fn: () => tryNpmPackage(url)      },
                 { name: 'oEmbed',          fn: () => tryOEmbed(url)          },
+                // Session cookie last — requires manual setup via .setigsession
+                { name: 'Session Cookie',  fn: () => trySessionCookie(url)  },
             ];
 
             let items     = null;

@@ -266,9 +266,29 @@ async function handleMessages(sock, message) {
         // though the text is buried one level deeper inside a wrapper field.
         const rawMsg = message.message;
         if (!rawMsg) return;
-        const msg = (typeof normalizeMessageContent === 'function'
+
+        // Manual unwrap for wrappers that some Baileys forks don't cover:
+        // deviceSentMessage   — bot's own messages synced from another linked device
+        // ephemeralMessage    — disappearing messages
+        // viewOnceMessage*    — view-once (already in normalizeMessageContent but belt+suspenders)
+        // documentWithCaption — document+caption wrapper
+        // editedMessage       — in-place message edits
+        function _unwrap(c) {
+            if (!c) return c;
+            return c?.deviceSentMessage?.message
+                || c?.ephemeralMessage?.message
+                || c?.viewOnceMessageV2?.message
+                || c?.viewOnceMessageV2Extension?.message
+                || c?.viewOnceMessage?.message
+                || c?.documentWithCaptionMessage?.message
+                || c?.editedMessage?.message?.protocolMessage?.editedMessage
+                || c;
+        }
+
+        const _normalized = (typeof normalizeMessageContent === 'function'
             ? normalizeMessageContent(rawMsg)
             : rawMsg) || rawMsg;
+        const msg = _unwrap(_normalized) || _normalized;
 
 
         // jid  = the chat to respond to — always m.key.remoteJid, NEVER reconstructed.
@@ -318,8 +338,14 @@ async function handleMessages(sock, message) {
         const text = (
             msg.conversation ||
             msg.extendedTextMessage?.text ||
+            // deviceSentMessage — bot's own msgs synced from another linked device (WA Business accounts)
+            rawMsg.deviceSentMessage?.message?.conversation ||
+            rawMsg.deviceSentMessage?.message?.extendedTextMessage?.text ||
             msg.ephemeralMessage?.message?.conversation ||
             msg.ephemeralMessage?.message?.extendedTextMessage?.text ||
+            // viewOnce text (not just media captions)
+            msg.viewOnceMessageV2?.message?.conversation ||
+            msg.viewOnceMessageV2?.message?.extendedTextMessage?.text ||
             msg.viewOnceMessageV2?.message?.imageMessage?.caption ||
             msg.viewOnceMessageV2?.message?.videoMessage?.caption ||
             msg.imageMessage?.caption ||
@@ -342,6 +368,9 @@ async function handleMessages(sock, message) {
             msg.productMessage?.contextInfo?.quotedMessage?.conversation ||
             msg.orderMessage?.message ||
             msg.reactionMessage?.text ||
+            // Fallback: walk the entire rawMsg for any conversation/text field not caught above
+            rawMsg.conversation ||
+            rawMsg.extendedTextMessage?.text ||
             ''
         ).replace(/^\uFEFF/, '').replace(/^\u200B+/, '').trim();
 
